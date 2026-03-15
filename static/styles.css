@@ -31,6 +31,26 @@ html, body {
   opacity: 1;
 }
 
+/* transition=none: instant switch, no animation */
+.trans-none .photo {
+  transition: none;
+}
+
+/* transition=slide: slide in from right, exit to left */
+.trans-slide .photo {
+  opacity: 1;
+  transform: translateX(100%);
+  transition: transform 900ms ease-in-out;
+}
+
+.trans-slide .photo.visible {
+  transform: translateX(0%);
+}
+
+.trans-slide .photo.exiting {
+  transform: translateX(-100%);
+}
+
 .hud {
   position: absolute;
   left: 12px;

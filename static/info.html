@@ -137,13 +137,26 @@
               <span class="muted">best-effort</span>
             </td>
           </tr>
+          <tr>
+            <td><code>transition</code></td>
+            <td><code>fade</code>, <code>none</code>, <code>slide</code></td>
+            <td><code>fade</code></td>
+            <td>
+              Controls the animation between photos.
+              <code>fade</code> crossfades opacity (default).
+              <code>none</code> switches instantly with no animation.
+              <code>slide</code> slides the incoming photo in from the right.
+            </td>
+          </tr>
         </tbody>
       </table>
 
       <pre><code>/?hud=1
 /?seconds=15&amp;shuffle=1&amp;fit=cover&amp;hud=1
 /?seconds=30&amp;shuffle=0&amp;order=name_asc&amp;refresh=120
-/?awake=0</code></pre>
+/?awake=0
+/?transition=slide
+/?transition=none</code></pre>
     </div>
 
     <div class="card">

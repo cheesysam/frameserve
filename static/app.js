@@ -12,6 +12,7 @@
   //  - order=mtime_desc|mtime_asc|name_asc|name_desc
   //  - refresh=60 (seconds to re-fetch list)
   //  - awake=1 (request Screen Wake Lock; default on)
+  //  - transition=fade|none|slide (default: fade)
   const params = new URLSearchParams(location.search);
 
   const seconds = clampInt(params.get("seconds"), 10, 1, 3600);
@@ -21,9 +22,13 @@
   const order = (params.get("order") || "mtime_desc");
   const refreshSeconds = clampInt(params.get("refresh"), 60, 5, 3600);
   const keepAwake = truthy(params.get("awake"), true);
+  const transition = validTransition(params.get("transition"));
 
   imgA.style.objectFit = (fit === "cover") ? "cover" : "contain";
   imgB.style.objectFit = (fit === "cover") ? "cover" : "contain";
+
+  const stage = document.getElementById("stage");
+  stage.classList.add("trans-" + transition);
 
   if (!showHud) hud.classList.add("hidden");
   else hud.classList.remove("hidden");
@@ -92,6 +97,12 @@
     return (s === "1" || s === "true" || s === "yes" || s === "on");
   }
 
+  function validTransition(v) {
+    const allowed = ["fade", "none", "slide"];
+    const s = (v || "").toLowerCase().trim();
+    return allowed.includes(s) ? s : "fade";
+  }
+
   function pickStartIndex() {
     if (!photos.length) return 0;
     return shuffle ? Math.floor(Math.random() * photos.length) : 0;
@@ -119,8 +130,16 @@
   function swapLayers() {
     const cur = currentImg();
     const nxt = nextImg();
-    cur.classList.remove("visible");
-    nxt.classList.add("visible");
+    if (transition === "slide") {
+      cur.classList.add("exiting");
+      cur.classList.remove("visible");
+      nxt.classList.add("visible");
+      // Remove exiting class after the CSS transition finishes
+      setTimeout(() => cur.classList.remove("exiting"), 950);
+    } else {
+      cur.classList.remove("visible");
+      nxt.classList.add("visible");
+    }
     active = (active === "A") ? "B" : "A";
   }
 
