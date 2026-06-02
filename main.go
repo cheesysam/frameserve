@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"net/http"
@@ -40,6 +41,11 @@ const (
 	authCookieName = "frameserve_auth"
 	// 365 days. “Set it and forget it” while still having *some* bounded lifetime.
 	authCookieMaxAgeSeconds = 365 * 24 * 60 * 60
+
+	// Build version. Bump on each release so the running build can be
+	// identified at runtime via /healthz (handy for confirming a deploy
+	// actually picked up the new image).
+	version = "v5"
 )
 
 func main() {
@@ -71,7 +77,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		serveEmbeddedFile(w, r, "static/index.html", "text/html; charset=utf-8")
+		serveIndex(w, r)
 	})
 
 	// Info page (how to use the site)
@@ -143,8 +149,9 @@ func main() {
 			return
 		}
 
-		// Only allow file names (no subdirectories) to keep it simple + safe.
-		if strings.Contains(name, "/") || strings.Contains(name, `\`) {
+		// Subdirectories are allowed, but reject backslashes outright.
+		// Path traversal is handled by safeJoin below.
+		if strings.Contains(name, `\`) {
 			http.NotFound(w, r)
 			return
 		}
@@ -182,8 +189,9 @@ func main() {
 	// Health check (left intentionally unauthenticated so health checks work cleanly)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok " + version))
 	})
 
 	var handler http.Handler = mux
@@ -212,6 +220,24 @@ func getenv(k, def string) string {
 	return v
 }
 
+// serveIndex serves the slideshow page with the current build version injected
+// into the asset URLs (e.g. styles.css?v=v3). Because the page itself is never
+// cached, a new version means new asset URLs that no stale browser cache can
+// shadow — so UI changes always take effect, even in privacy browsers that
+// honor the original max-age of previously cached CSS/JS.
+func serveIndex(w http.ResponseWriter, r *http.Request) {
+	b, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	html := strings.ReplaceAll(string(b), "__VER__", version)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, html)
+}
+
 func serveEmbeddedFile(w http.ResponseWriter, r *http.Request, path string, forcedContentType string) {
 	b, err := staticFS.ReadFile(path)
 	if err != nil {
@@ -230,10 +256,21 @@ func serveEmbeddedFile(w http.ResponseWriter, r *http.Request, path string, forc
 		}
 	}
 
-	// Static assets can be cached
-	if strings.HasPrefix(path, "static/") && path != "static/index.html" && path != "static/info.html" {
+	// Cache policy:
+	//  - HTML pages: never cache (always reflect the latest server state).
+	//  - CSS/JS: don't cache. These are tiny and drive the UI, so we want
+	//    edits to take effect on the next load without stale-cache surprises
+	//    (important for kiosks/TVs that are never manually refreshed).
+	//  - Other static assets (e.g. icons): safe to cache for a day.
+	lower := strings.ToLower(path)
+	switch {
+	case path == "static/index.html" || path == "static/info.html":
+		w.Header().Set("Cache-Control", "no-store")
+	case strings.HasSuffix(lower, ".css") || strings.HasSuffix(lower, ".js"):
+		w.Header().Set("Cache-Control", "no-store")
+	case strings.HasPrefix(path, "static/"):
 		w.Header().Set("Cache-Control", "public, max-age=86400")
-	} else {
+	default:
 		w.Header().Set("Cache-Control", "no-store")
 	}
 
@@ -241,41 +278,54 @@ func serveEmbeddedFile(w http.ResponseWriter, r *http.Request, path string, forc
 }
 
 func scanPhotos(dir string) ([]Photo, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-
 	var photos []Photo
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
+		// Don't abort the whole scan because one entry is unreadable.
+		if walkErr != nil {
+			return nil
 		}
-		name := e.Name()
+
+		if d.IsDir() {
+			// Skip hidden directories and Synology's @eaDir thumbnail folders.
+			base := d.Name()
+			if path != dir && (base == "@eaDir" || strings.HasPrefix(base, ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		name := d.Name()
 		if !isAllowedExt(name) {
-			continue
+			return nil
 		}
 
-		fullPath, err := safeJoin(dir, name)
+		// Relative path from the photos root, with forward slashes for URLs.
+		rel, err := filepath.Rel(dir, path)
 		if err != nil {
-			continue
+			return nil
 		}
+		relSlash := filepath.ToSlash(rel)
 
-		fi, err := os.Stat(fullPath)
-		if err != nil || fi.IsDir() {
-			continue
+		fi, err := d.Info()
+		if err != nil {
+			return nil
 		}
 
 		mtime := fi.ModTime().Unix()
 		// Cache-bust param v=mtime so browsers refresh when a file changes.
-		url := fmt.Sprintf("/photos/%s?v=%d", urlPathEscape(name), mtime)
+		url := fmt.Sprintf("/photos/%s?v=%d", urlPathEscape(relSlash), mtime)
 
 		photos = append(photos, Photo{
 			URL:   url,
-			Name:  name,
+			Name:  relSlash,
 			Mtime: mtime,
 			Size:  fi.Size(),
 		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return photos, nil
@@ -310,8 +360,10 @@ func safeJoin(baseDir, fileName string) (string, error) {
 	if fileName == "" {
 		return "", errors.New("empty name")
 	}
-	clean := filepath.Clean(fileName)
-	clean = filepath.Base(clean)
+	// Anchor at root then clean so any leading "../" is neutralized, while
+	// still preserving legitimate subdirectories (e.g. "trip/2024/img.jpg").
+	clean := filepath.Clean("/" + filepath.FromSlash(fileName))
+	clean = strings.TrimPrefix(clean, string(filepath.Separator))
 
 	joined := filepath.Join(baseDir, clean)
 

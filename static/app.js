@@ -3,6 +3,15 @@
   const imgB = document.getElementById("imgB");
   const hud = document.getElementById("hud");
   const statusEl = document.getElementById("status");
+  const prevBtn = document.getElementById("prevBtn");
+  const nextBtn = document.getElementById("nextBtn");
+  const pauseBtn = document.getElementById("pauseBtn");
+  const countdownEl = document.getElementById("countdown");
+  const countdownBar = document.getElementById("countdownBar");
+  const countdownNum = document.getElementById("countdownNum");
+
+  // Circumference of the countdown ring (r=19 in the SVG viewBox).
+  const CD_CIRCUMFERENCE = 2 * Math.PI * 19;
 
   // Query params (client-side only):
   //  - seconds=10
@@ -39,6 +48,17 @@
   let active = "A";
   let timer = null;
   let lastListHash = "";
+
+  // Countdown state (drives the on-screen timer ring).
+  let remainingMs = seconds * 1000;
+  let lastTick = 0;
+
+  // Navigation history: the trail of photo indices we've actually shown.
+  // Back walks this trail; Forward replays it; only past the tip do we pick
+  // a new (random, when shuffling) photo.
+  const MAX_HISTORY = 500;
+  let history = [];
+  let histPos = -1;
 
   // ---- Wake Lock (best-effort; OS/browser may still dim/sleep) ----
   let wakeLock = null;
@@ -114,12 +134,6 @@
     return (idx + 1) % photos.length;
   }
 
-  function prevIndex() {
-    if (!photos.length) return 0;
-    if (shuffle) return Math.floor(Math.random() * photos.length);
-    return (idx - 1 + photos.length) % photos.length;
-  }
-
   function currentImg() {
     return active === "A" ? imgA : imgB;
   }
@@ -154,9 +168,13 @@
 
   async function showAt(i, immediate = false) {
     if (!photos.length) return;
+    if (i < 0 || i >= photos.length) i = 0; // guard stale history indices
 
     idx = i;
     const url = photos[idx].url || photos[idx];
+
+    // Restart the countdown for the photo we're about to display.
+    resetCountdown();
 
     setStatus(`${idx + 1}/${photos.length} • ${paused ? "paused" : seconds + "s"} • ${shuffle ? "shuffle" : "ordered"} • fit=${fit}`);
 
@@ -181,12 +199,45 @@
     });
   }
 
+  function updateCountdown() {
+    const total = seconds * 1000;
+    const frac = Math.max(0, Math.min(1, remainingMs / total));
+    if (countdownBar) {
+      countdownBar.style.strokeDasharray = CD_CIRCUMFERENCE.toFixed(2);
+      // Deplete the ring as time runs out (frac=1 → full, frac=0 → empty).
+      countdownBar.style.strokeDashoffset = (CD_CIRCUMFERENCE * (1 - frac)).toFixed(2);
+    }
+    if (countdownNum) {
+      countdownNum.textContent = String(Math.max(0, Math.ceil(remainingMs / 1000)));
+    }
+    if (countdownEl) countdownEl.classList.toggle("fs-paused", paused);
+  }
+
+  function resetCountdown() {
+    remainingMs = seconds * 1000;
+    lastTick = performance.now();
+    updateCountdown();
+  }
+
+  function tick() {
+    const now = performance.now();
+    const dt = now - lastTick;
+    lastTick = now;
+    if (!paused) {
+      remainingMs -= dt;
+      if (remainingMs <= 0) {
+        goNext(); // advances (replaying forward history, else new), resets countdown
+        return;
+      }
+    }
+    updateCountdown();
+  }
+
   function startTimer() {
     stopTimer();
-    timer = setInterval(() => {
-      if (paused) return;
-      showAt(nextIndex());
-    }, seconds * 1000);
+    resetCountdown();
+    // Tick frequently so the ring animates smoothly and stays accurate.
+    timer = setInterval(tick, 100);
   }
 
   function stopTimer() {
@@ -236,22 +287,85 @@
     }, refreshSeconds * 1000);
   }
 
+  function pushHistory(i) {
+    // Append a freshly chosen photo and move the pointer to the tip.
+    history.push(i);
+    if (history.length > MAX_HISTORY) {
+      const removed = history.length - MAX_HISTORY;
+      history.splice(0, removed);
+      histPos -= removed;
+    }
+    histPos = history.length - 1;
+  }
+
+  async function goNext() {
+    if (!photos.length) return;
+    // If we've stepped back, Forward replays the recorded trail first.
+    if (histPos < history.length - 1) {
+      histPos++;
+      await showAt(history[histPos]);
+      return;
+    }
+    // At the tip: pick a new photo (random when shuffling) and record it.
+    const i = nextIndex();
+    pushHistory(i);
+    await showAt(i);
+  }
+
+  async function goPrev() {
+    if (!photos.length) return;
+    // Back walks the recorded trail; do nothing once we're at its start.
+    if (histPos > 0) {
+      histPos--;
+      await showAt(history[histPos]);
+    }
+  }
+
+  function updatePauseBtn() {
+    if (!pauseBtn) return;
+    // ▶ when paused (tap to resume), ❙❙ when playing (tap to pause).
+    pauseBtn.textContent = paused ? "▶" : "❙❙";
+    pauseBtn.setAttribute("aria-label", paused ? "Resume slideshow" : "Pause slideshow");
+  }
+
+  function togglePause() {
+    paused = !paused;
+    updatePauseBtn();
+    updateCountdown();
+    setStatus(`${idx + 1}/${photos.length} • ${paused ? "paused" : seconds + "s"} • ${shuffle ? "shuffle" : "ordered"} • fit=${fit}`);
+  }
+
+  function bindControls() {
+    if (nextBtn) nextBtn.addEventListener("click", goNext);
+    if (prevBtn) prevBtn.addEventListener("click", goPrev);
+    if (pauseBtn) pauseBtn.addEventListener("click", togglePause);
+    updatePauseBtn();
+    if (countdownEl) {
+      countdownEl.addEventListener("click", togglePause);
+      countdownEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " " || e.code === "Space") {
+          e.preventDefault();
+          togglePause();
+        }
+      });
+    }
+  }
+
   function bindKeys() {
     window.addEventListener("keydown", async (e) => {
       if (e.key === " " || e.code === "Space") {
         e.preventDefault();
-        paused = !paused;
-        setStatus(`${idx + 1}/${photos.length} • ${paused ? "paused" : seconds + "s"} • ${shuffle ? "shuffle" : "ordered"} • fit=${fit}`);
+        togglePause();
         return;
       }
       if (e.key === "ArrowRight") {
         e.preventDefault();
-        await showAt(nextIndex());
+        await goNext();
         return;
       }
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        await showAt(prevIndex());
+        await goPrev();
         return;
       }
       if (e.key.toLowerCase() === "f") {
@@ -273,6 +387,7 @@
 
   async function boot() {
     bindKeys();
+    bindControls();
 
     // Best-effort attempt to keep screen awake while visible.
     // Note: Some platforms require user interaction or may ignore due to power settings.
@@ -290,6 +405,8 @@
       }
 
       idx = pickStartIndex();
+      history = [idx];
+      histPos = 0;
       await showAt(idx, true);
 
       startTimer();

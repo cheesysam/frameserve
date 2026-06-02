@@ -13,7 +13,7 @@
   <!-- Optional: nicer tab color on supported browsers -->
   <meta name="theme-color" content="#000000" />
 
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=__VER__" />
 </head>
 <body>
   <div id="stage" class="stage">
@@ -27,8 +27,23 @@
         <span>Space: pause • ←/→: prev/next • F: fullscreen • H: toggle HUD</span>
       </div>
     </div>
+
+    <!-- Advance / countdown overlay. Class names are app-namespaced (fs-*) so
+         privacy/content blockers' cosmetic filters don't hide them. -->
+    <div id="fs-overlay" class="fs-overlay">
+      <button id="prevBtn" class="fs-btn" type="button" aria-label="Previous photo">&#8249;</button>
+      <button id="pauseBtn" class="fs-btn" type="button" aria-label="Pause slideshow">&#10073;&#10073;</button>
+      <div id="countdown" class="fs-timer" role="button" tabindex="0" aria-label="Time until next photo (click to pause)" title="Time until next photo — click to pause">
+        <svg class="fs-timer-svg" viewBox="0 0 44 44" aria-hidden="true">
+          <circle class="fs-timer-track" cx="22" cy="22" r="19"></circle>
+          <circle id="countdownBar" class="fs-timer-fill" cx="22" cy="22" r="19"></circle>
+        </svg>
+        <span id="countdownNum" class="fs-timer-num">0</span>
+      </div>
+      <button id="nextBtn" class="fs-btn" type="button" aria-label="Next photo">&#8250;</button>
+    </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=__VER__"></script>
 </body>
 </html>
