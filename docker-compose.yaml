@@ -7,8 +7,14 @@ services:
       - "${HOST_PORT:-8080}:80"
     volumes:
       - ./photos:/photos:ro
+      # Writable location for the favourites list (photos is read-only).
+      - frameserve-data:/data
     environment:
       - PORT=${PORT:-80}
       - PHOTOS_DIR=/photos
+      - FAVOURITES_FILE=/data/favourites.txt
       - AUTH_TOKEN=${AUTH_TOKEN:-change-me-to-your-password}
     restart: ${RESTART_POLICY:-unless-stopped}
+
+volumes:
+  frameserve-data:

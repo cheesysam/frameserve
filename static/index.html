@@ -13,6 +13,7 @@
   <!-- Optional: nicer tab color on supported browsers -->
   <meta name="theme-color" content="#000000" />
 
+  <link rel="stylesheet" href="/static/fonts.css?v=__VER__" />
   <link rel="stylesheet" href="/static/styles.css?v=__VER__" />
 </head>
 <body>
@@ -24,23 +25,82 @@
         <span id="status"></span>
       </div>
       <div class="hud-row small">
-        <span>Space: pause • ←/→: prev/next • F: fullscreen • H: toggle HUD</span>
+        <span>Use the on-screen controls to navigate, favourite, and open settings.</span>
       </div>
+    </div>
+
+    <!-- Top-right controls: favourite, menu, settings. -->
+    <div id="fs-topbar" class="fs-topbar">
+      <button id="favBtn" class="fs-btn" type="button" aria-label="Favourite this photo" title="Favourite this photo">
+        <svg class="fs-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5C8 17.5 4 14.2 4 9.8 4 7.1 6 5.2 8.4 5.2c1.6 0 3 .9 3.6 2.2.6-1.3 2-2.2 3.6-2.2C18 5.2 20 7.1 20 9.8c0 4.4-4 7.7-8 10.7z"/></svg>
+      </button>
+      <button id="menuBtn" class="fs-btn" type="button" aria-label="Menu" title="Menu">
+        <svg class="fs-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <button id="settingsBtn" class="fs-btn" type="button" aria-label="Settings" title="Settings">
+        <svg class="fs-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h6M15.2 8H20"/><circle cx="12.4" cy="8" r="2.4"/><path d="M4 16h4.8M14 16h6"/><circle cx="11.2" cy="16" r="2.4"/></svg>
+      </button>
     </div>
 
     <!-- Advance / countdown overlay. Class names are app-namespaced (fs-*) so
          privacy/content blockers' cosmetic filters don't hide them. -->
     <div id="fs-overlay" class="fs-overlay">
-      <button id="prevBtn" class="fs-btn" type="button" aria-label="Previous photo">&#8249;</button>
-      <button id="pauseBtn" class="fs-btn" type="button" aria-label="Pause slideshow">&#10073;&#10073;</button>
-      <div id="countdown" class="fs-timer" role="button" tabindex="0" aria-label="Time until next photo (click to pause)" title="Time until next photo — click to pause">
+      <button id="prevBtn" class="fs-btn" type="button" aria-label="Previous photo">
+        <svg class="fs-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4 7 12l8 8"/></svg>
+      </button>
+      <button id="pauseBtn" class="fs-btn" type="button" aria-label="Pause slideshow">
+        <svg class="fs-icon fs-icon--fill" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="5" width="3.6" height="14" rx="1.2"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2"/></svg>
+      </button>
+      <div id="countdown" class="fs-timer" role="button" aria-label="Time until next photo (click to pause)" title="Time until next photo — click to pause">
         <svg class="fs-timer-svg" viewBox="0 0 44 44" aria-hidden="true">
           <circle class="fs-timer-track" cx="22" cy="22" r="19"></circle>
           <circle id="countdownBar" class="fs-timer-fill" cx="22" cy="22" r="19"></circle>
         </svg>
         <span id="countdownNum" class="fs-timer-num">0</span>
       </div>
-      <button id="nextBtn" class="fs-btn" type="button" aria-label="Next photo">&#8250;</button>
+      <button id="nextBtn" class="fs-btn" type="button" aria-label="Next photo">
+        <svg class="fs-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4l8 8-8 8"/></svg>
+      </button>
+    </div>
+
+    <!-- Menu panel -->
+    <div id="menuPanel" class="fs-panel fs-panel-menu hidden" role="menu" aria-label="Menu">
+      <button id="viewAllBtn" class="fs-menu-item" type="button" role="menuitem">All photos</button>
+      <button id="viewFavsBtn" class="fs-menu-item" type="button" role="menuitem">Favourites <span id="favCount" class="fs-badge">0</span></button>
+    </div>
+
+    <!-- Settings panel -->
+    <div id="settingsPanel" class="fs-panel fs-panel-settings hidden" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="fs-panel-head">
+        <span class="fs-panel-title">Settings</span>
+        <button id="settingsCloseBtn" class="fs-panel-close" type="button" aria-label="Close settings">
+          <svg class="fs-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <label class="fs-field" for="secondsRange">
+        <span class="fs-field-label">Seconds per photo: <strong id="secondsValue">10</strong></span>
+        <input id="secondsRange" type="range" min="5" max="600" step="1" value="10" />
+      </label>
+
+      <label class="fs-field fs-field-row" for="diffFolderToggle">
+        <input id="diffFolderToggle" type="checkbox" />
+        <span class="fs-field-label">Favour a photo from a different folder next</span>
+      </label>
+
+      <p class="fs-hint">Settings are saved on this device.</p>
+    </div>
+
+    <!-- Favourites gallery (scrollable thumbnail grid) -->
+    <div id="galleryOverlay" class="fs-gallery hidden" role="dialog" aria-modal="true" aria-label="Favourites gallery">
+      <div class="fs-gallery-head">
+        <span class="fs-gallery-title">Favourites <span id="galleryCount" class="fs-badge">0</span></span>
+        <button id="galleryCloseBtn" class="fs-panel-close" type="button" aria-label="Close gallery">
+          <svg class="fs-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div id="galleryGrid" class="fs-gallery-grid"></div>
+      <p id="galleryEmpty" class="fs-gallery-empty hidden">No favourites yet — tap &#9825; on a photo to add it.</p>
     </div>
   </div>
 

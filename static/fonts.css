@@ -1,0 +1,19 @@
+/* Self-hosted fonts (latin subset) so typography is identical on every
+   device — kiosks/TVs included — with no external requests. Both are variable
+   fonts: a single file covers the whole weight range. */
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/inter.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("/static/fonts/jetbrainsmono.woff2") format("woff2");
+}

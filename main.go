@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"crypto/subtle"
@@ -45,10 +46,108 @@ const (
 	// Build version. Bump on each release so the running build can be
 	// identified at runtime via /healthz (handy for confirming a deploy
 	// actually picked up the new image).
-	version = "v5"
+	version = "v8"
 )
 
+// favStore persists the list of favourited photo paths to a plain text file
+// (one relative path per line). It's deliberately simple — a shared, single
+// list good enough for a household photo frame. Guarded by a mutex since
+// multiple devices can hit the endpoint concurrently.
+type favStore struct {
+	mu   sync.Mutex
+	path string
+}
+
+func newFavStore(path string) *favStore {
+	// Best-effort: make sure the parent dir exists so the first write succeeds.
+	if dir := filepath.Dir(path); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	return &favStore{path: path}
+}
+
+// list returns the current favourites (de-duplicated, order preserved).
+func (s *favStore) list() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readLocked()
+}
+
+func (s *favStore) readLocked() ([]string, error) {
+	b, err := os.ReadFile(s.path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		out = append(out, line)
+	}
+	return out, nil
+}
+
+func (s *favStore) writeLocked(items []string) error {
+	// Atomic write: temp file + rename so a crash can't leave a half-written list.
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(items, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
+}
+
+// add inserts name if not already present. Returns the updated list.
+func (s *favStore) add(name string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items, err := s.readLocked()
+	if err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		if it == name {
+			return items, nil // already favourited
+		}
+	}
+	items = append(items, name)
+	if err := s.writeLocked(items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// remove deletes name if present. Returns the updated list.
+func (s *favStore) remove(name string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items, err := s.readLocked()
+	if err != nil {
+		return nil, err
+	}
+	out := items[:0:0]
+	for _, it := range items {
+		if it != name {
+			out = append(out, it)
+		}
+	}
+	if err := s.writeLocked(out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func main() {
+	// Ensure correct Content-Type for self-hosted fonts (not in Go's default
+	// MIME table on all platforms).
+	_ = mime.AddExtensionType(".woff2", "font/woff2")
+
 	port := getenv("PORT", "80")
 	photosDir := getenv("PHOTOS_DIR", "/photos")
 
@@ -67,7 +166,16 @@ func main() {
 		log.Fatalf("failed to resolve PHOTOS_DIR: %v", err)
 	}
 
-	log.Printf("Frameserve starting: port=%s photos_dir=%s auth=%v", port, absPhotosDir, authToken != "")
+	// Favourites are stored in a plain text file (one path per line). The
+	// photos dir is typically mounted read-only, so this lives elsewhere —
+	// mount a writable volume at /data in production.
+	favFile, err := filepath.Abs(getenv("FAVOURITES_FILE", "data/favourites.txt"))
+	if err != nil {
+		log.Fatalf("failed to resolve FAVOURITES_FILE: %v", err)
+	}
+	favs := newFavStore(favFile)
+
+	log.Printf("Frameserve starting: port=%s photos_dir=%s favourites_file=%s auth=%v", port, absPhotosDir, favFile, authToken != "")
 
 	mux := http.NewServeMux()
 
@@ -133,6 +241,67 @@ func main() {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(resp)
+	})
+
+	// API: favourites (shared list, persisted to a text file)
+	//  - GET    -> {"favourites": ["folder/img.jpg", ...]}
+	//  - POST   {"name":"folder/img.jpg"} -> add
+	//  - DELETE {"name":"folder/img.jpg"} -> remove
+	mux.HandleFunc("/api/favourites", func(w http.ResponseWriter, r *http.Request) {
+		writeFavs := func(items []string) {
+			if items == nil {
+				items = []string{}
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			enc := json.NewEncoder(w)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(map[string]any{"favourites": items, "count": len(items)})
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			items, err := favs.list()
+			if err != nil {
+				http.Error(w, "failed to read favourites", http.StatusInternalServerError)
+				log.Printf("favourites read error: %v", err)
+				return
+			}
+			writeFavs(items)
+
+		case http.MethodPost, http.MethodDelete:
+			var body struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+				http.Error(w, "invalid JSON body", http.StatusBadRequest)
+				return
+			}
+			name := strings.TrimSpace(body.Name)
+			// Keep the line-based file format intact and only accept real images.
+			if name == "" || strings.ContainsAny(name, "\n\r") || !isAllowedExt(name) {
+				http.Error(w, "invalid name", http.StatusBadRequest)
+				return
+			}
+
+			var items []string
+			var err error
+			if r.Method == http.MethodPost {
+				items, err = favs.add(name)
+			} else {
+				items, err = favs.remove(name)
+			}
+			if err != nil {
+				http.Error(w, "failed to update favourites", http.StatusInternalServerError)
+				log.Printf("favourites write error: %v", err)
+				return
+			}
+			writeFavs(items)
+
+		default:
+			w.Header().Set("Allow", "GET, POST, DELETE")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 
 	// Serve individual photos safely
@@ -506,6 +675,7 @@ func unauthorized(w http.ResponseWriter, r *http.Request) {
   <link rel="icon" type="image/svg+xml" href="/static/camera.svg" />
   <link rel="apple-touch-icon" href="/static/camera.svg" />
   <meta name="theme-color" content="#000000" />
+  <link rel="stylesheet" href="/static/fonts.css" />
   <link rel="stylesheet" href="/static/info.css" />
 </head>
 <body>

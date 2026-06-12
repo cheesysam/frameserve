@@ -1,5 +1,6 @@
 .env
 photos/
+data/
 notes.txt
 *.bak
 .env

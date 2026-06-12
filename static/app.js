@@ -10,6 +10,35 @@
   const countdownBar = document.getElementById("countdownBar");
   const countdownNum = document.getElementById("countdownNum");
 
+  // Top-right controls + panels
+  const favBtn = document.getElementById("favBtn");
+  const menuBtn = document.getElementById("menuBtn");
+  const settingsBtn = document.getElementById("settingsBtn");
+  const menuPanel = document.getElementById("menuPanel");
+  const settingsPanel = document.getElementById("settingsPanel");
+  const settingsCloseBtn = document.getElementById("settingsCloseBtn");
+  const viewAllBtn = document.getElementById("viewAllBtn");
+  const viewFavsBtn = document.getElementById("viewFavsBtn");
+  const favCountEl = document.getElementById("favCount");
+  const secondsRange = document.getElementById("secondsRange");
+  const secondsValue = document.getElementById("secondsValue");
+  const diffFolderToggle = document.getElementById("diffFolderToggle");
+
+  // Favourites gallery
+  const galleryOverlay = document.getElementById("galleryOverlay");
+  const galleryGrid = document.getElementById("galleryGrid");
+  const galleryCloseBtn = document.getElementById("galleryCloseBtn");
+  const galleryCount = document.getElementById("galleryCount");
+  const galleryEmpty = document.getElementById("galleryEmpty");
+
+  // Inline SVG icons for the controls whose glyph changes at runtime.
+  const ICONS = {
+    pause: '<svg class="fs-icon fs-icon--fill" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="5" width="3.6" height="14" rx="1.2"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2"/></svg>',
+    play: '<svg class="fs-icon fs-icon--fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5l12 7-12 7z"/></svg>',
+    heart: '<svg class="fs-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5C8 17.5 4 14.2 4 9.8 4 7.1 6 5.2 8.4 5.2c1.6 0 3 .9 3.6 2.2.6-1.3 2-2.2 3.6-2.2C18 5.2 20 7.1 20 9.8c0 4.4-4 7.7-8 10.7z"/></svg>',
+    heartFilled: '<svg class="fs-icon fs-icon--fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5C8 17.5 4 14.2 4 9.8 4 7.1 6 5.2 8.4 5.2c1.6 0 3 .9 3.6 2.2.6-1.3 2-2.2 3.6-2.2C18 5.2 20 7.1 20 9.8c0 4.4-4 7.7-8 10.7z"/></svg>',
+  };
+
   // Circumference of the countdown ring (r=19 in the SVG viewBox).
   const CD_CIRCUMFERENCE = 2 * Math.PI * 19;
 
@@ -24,7 +53,39 @@
   //  - transition=fade|none|slide (default: fade)
   const params = new URLSearchParams(location.search);
 
-  const seconds = clampInt(params.get("seconds"), 10, 1, 3600);
+  // ---- Persisted settings (localStorage) ----
+  // These override URL params and survive reloads. The ?seconds= param still
+  // acts as the initial default the first time a device is used.
+  const SETTINGS_KEY = "frameserve.settings.v1";
+  const SECONDS_MIN = 5;
+  const SECONDS_MAX = 600;
+
+  const settings = loadSettings();
+
+  function loadSettings() {
+    const s = {
+      seconds: clampInt(params.get("seconds"), 10, SECONDS_MIN, SECONDS_MAX),
+      favourDifferentFolder: false,
+    };
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Number.isFinite(parsed.seconds)) {
+          s.seconds = Math.max(SECONDS_MIN, Math.min(SECONDS_MAX, Math.round(parsed.seconds)));
+        }
+        if (typeof parsed.favourDifferentFolder === "boolean") {
+          s.favourDifferentFolder = parsed.favourDifferentFolder;
+        }
+      }
+    } catch { /* ignore corrupt storage */ }
+    return s;
+  }
+
+  function saveSettings() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* ignore */ }
+  }
+
   const shuffle = truthy(params.get("shuffle"), true);
   const fit = (params.get("fit") || "contain").toLowerCase();
   const showHud = truthy(params.get("hud"), false);
@@ -42,7 +103,12 @@
   if (!showHud) hud.classList.add("hidden");
   else hud.classList.remove("hidden");
 
+  // allPhotos is the full server list; photos is the current view (all or
+  // favourites). idx always indexes into photos.
+  let allPhotos = [];
   let photos = [];
+  let favourites = new Set(); // favourited photo names (relative paths)
+  let viewMode = "all";       // "all" | "favourites"
   let idx = 0;
   let paused = false;
   let active = "A";
@@ -50,7 +116,7 @@
   let lastListHash = "";
 
   // Countdown state (drives the on-screen timer ring).
-  let remainingMs = seconds * 1000;
+  let remainingMs = settings.seconds * 1000;
   let lastTick = 0;
 
   // Navigation history: the trail of photo indices we've actually shown.
@@ -128,10 +194,37 @@
     return shuffle ? Math.floor(Math.random() * photos.length) : 0;
   }
 
+  function folderOf(name) {
+    const slash = String(name || "").lastIndexOf("/");
+    return slash === -1 ? "" : name.slice(0, slash);
+  }
+
+  function randomOther() {
+    // Random index that isn't the current one (when more than one photo).
+    if (photos.length <= 1) return 0;
+    let r = Math.floor(Math.random() * photos.length);
+    if (r === idx) r = (r + 1) % photos.length;
+    return r;
+  }
+
   function nextIndex() {
     if (!photos.length) return 0;
-    if (shuffle) return Math.floor(Math.random() * photos.length);
-    return (idx + 1) % photos.length;
+    if (!shuffle) return (idx + 1) % photos.length;
+
+    // Optionally bias the random pick toward a photo in a *different* folder
+    // than the current one, so the slideshow roams across albums instead of
+    // dwelling in one. Falls back to a plain random pick if there are no
+    // photos in other folders.
+    if (settings.favourDifferentFolder && photos.length > 1) {
+      const cur = folderOf(photos[idx] && photos[idx].name);
+      const others = [];
+      for (let k = 0; k < photos.length; k++) {
+        if (k !== idx && folderOf(photos[k].name) !== cur) others.push(k);
+      }
+      if (others.length) return others[Math.floor(Math.random() * others.length)];
+    }
+
+    return randomOther();
   }
 
   function currentImg() {
@@ -176,7 +269,8 @@
     // Restart the countdown for the photo we're about to display.
     resetCountdown();
 
-    setStatus(`${idx + 1}/${photos.length} • ${paused ? "paused" : seconds + "s"} • ${shuffle ? "shuffle" : "ordered"} • fit=${fit}`);
+    updateStatus();
+    updateFavBtn();
 
     const nxt = nextImg();
     // preload first to minimize blank flashes
@@ -199,8 +293,13 @@
     });
   }
 
+  function updateStatus() {
+    const view = viewMode === "favourites" ? "favourites" : (shuffle ? "shuffle" : "ordered");
+    setStatus(`${idx + 1}/${photos.length} • ${paused ? "paused" : settings.seconds + "s"} • ${view} • fit=${fit}`);
+  }
+
   function updateCountdown() {
-    const total = seconds * 1000;
+    const total = settings.seconds * 1000;
     const frac = Math.max(0, Math.min(1, remainingMs / total));
     if (countdownBar) {
       countdownBar.style.strokeDasharray = CD_CIRCUMFERENCE.toFixed(2);
@@ -214,7 +313,7 @@
   }
 
   function resetCountdown() {
-    remainingMs = seconds * 1000;
+    remainingMs = settings.seconds * 1000;
     lastTick = performance.now();
     updateCountdown();
   }
@@ -257,8 +356,18 @@
     // Create a simple hash signature to detect changes
     const signature = JSON.stringify(list.map(p => [p.name, p.mtime]));
 
-    photos = list;
+    allPhotos = list;
     lastListHash = signature;
+    applyView();
+  }
+
+  // Rebuild the current view (photos) from allPhotos based on viewMode.
+  function applyView() {
+    if (viewMode === "favourites") {
+      photos = allPhotos.filter(p => favourites.has(p.name));
+    } else {
+      photos = allPhotos.slice();
+    }
   }
 
   async function refreshListPeriodically() {
@@ -273,13 +382,14 @@
         const signature = JSON.stringify(list.map(p => [p.name, p.mtime]));
 
         if (signature !== lastListHash) {
-          photos = list;
+          allPhotos = list;
           lastListHash = signature;
+          applyView();
 
           // If current index is out of range after deletions, clamp.
           if (idx >= photos.length) idx = 0;
           // Continue slideshow seamlessly; show current immediately.
-          await showAt(idx, true);
+          if (photos.length) await showAt(idx, true);
         }
       } catch {
         // ignore
@@ -323,8 +433,8 @@
 
   function updatePauseBtn() {
     if (!pauseBtn) return;
-    // ▶ when paused (tap to resume), ❙❙ when playing (tap to pause).
-    pauseBtn.textContent = paused ? "▶" : "❙❙";
+    // Play glyph when paused (tap to resume), pause bars when playing.
+    pauseBtn.innerHTML = paused ? ICONS.play : ICONS.pause;
     pauseBtn.setAttribute("aria-label", paused ? "Resume slideshow" : "Pause slideshow");
   }
 
@@ -332,62 +442,255 @@
     paused = !paused;
     updatePauseBtn();
     updateCountdown();
-    setStatus(`${idx + 1}/${photos.length} • ${paused ? "paused" : seconds + "s"} • ${shuffle ? "shuffle" : "ordered"} • fit=${fit}`);
+    updateStatus();
+  }
+
+  // ---- Favourites ----
+  async function fetchFavourites() {
+    try {
+      const res = await fetch("/api/favourites", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      favourites = new Set(data.favourites || []);
+      updateFavCount();
+      updateFavBtn();
+    } catch { /* ignore */ }
+  }
+
+  function currentName() {
+    return photos.length ? photos[idx].name : null;
+  }
+
+  function updateFavBtn() {
+    if (!favBtn) return;
+    const name = currentName();
+    const isFav = !!name && favourites.has(name);
+    favBtn.classList.toggle("is-fav", isFav);
+    // Filled heart when favourited, outline when not.
+    favBtn.innerHTML = isFav ? ICONS.heartFilled : ICONS.heart;
+    favBtn.title = isFav ? "Remove from favourites" : "Favourite this photo";
+  }
+
+  function updateFavCount() {
+    if (favCountEl) favCountEl.textContent = String(favourites.size);
+  }
+
+  async function toggleFavourite() {
+    const name = currentName();
+    if (!name) return;
+    const isFav = favourites.has(name);
+
+    // Optimistic update for snappy feedback, reconciled with the server reply.
+    if (isFav) favourites.delete(name); else favourites.add(name);
+    updateFavBtn();
+    updateFavCount();
+
+    try {
+      const res = await fetch("/api/favourites", {
+        method: isFav ? "DELETE" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        favourites = new Set(data.favourites || []);
+      } else {
+        // Revert on failure.
+        if (isFav) favourites.add(name); else favourites.delete(name);
+      }
+    } catch {
+      if (isFav) favourites.add(name); else favourites.delete(name);
+    }
+
+    updateFavBtn();
+    updateFavCount();
+
+    // If we just un-favourited while viewing favourites, drop it from the view.
+    if (viewMode === "favourites" && !favourites.has(name)) {
+      const wasIdx = idx;
+      applyView();
+      if (!photos.length) {
+        setStatus("No favourites yet — tap ♥ to add some.");
+      } else {
+        if (wasIdx >= photos.length) idx = 0;
+        history = [idx];
+        histPos = 0;
+        await showAt(idx, true);
+      }
+    }
+  }
+
+  // ---- View mode (all / favourites) ----
+  async function setViewMode(mode) {
+    closeMenu();
+    if (mode === viewMode) return;
+
+    if (mode === "favourites" && favourites.size === 0) {
+      setStatus("No favourites yet — tap ♥ to add some.");
+      return;
+    }
+
+    viewMode = mode;
+    applyView();
+    updateMenuActive();
+
+    if (!photos.length) {
+      setStatus(mode === "favourites" ? "No favourites yet — tap ♥ to add some." : "No photos found.");
+      return;
+    }
+
+    idx = pickStartIndex();
+    history = [idx];
+    histPos = 0;
+    await showAt(idx, true);
+  }
+
+  function updateMenuActive() {
+    if (viewAllBtn) viewAllBtn.classList.toggle("is-active", viewMode === "all");
+    if (viewFavsBtn) viewFavsBtn.classList.toggle("is-active", viewMode === "favourites");
+  }
+
+  // Favourited photos in slideshow order (so the gallery and the favourites
+  // view stay consistent).
+  function favouritePhotos() {
+    return allPhotos.filter(p => favourites.has(p.name));
+  }
+
+  // ---- Favourites gallery ----
+  function openGallery() {
+    closeMenu();
+    buildGallery();
+    if (galleryOverlay) galleryOverlay.classList.remove("hidden");
+  }
+
+  function closeGallery() {
+    if (galleryOverlay) galleryOverlay.classList.add("hidden");
+  }
+
+  function buildGallery() {
+    if (!galleryGrid) return;
+    const favs = favouritePhotos();
+
+    if (galleryCount) galleryCount.textContent = String(favs.length);
+    if (galleryEmpty) galleryEmpty.classList.toggle("hidden", favs.length > 0);
+
+    galleryGrid.textContent = ""; // clear
+    for (const p of favs) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "fs-thumb";
+      btn.setAttribute("aria-label", `Show ${p.name}`);
+
+      const img = document.createElement("img");
+      img.src = p.url;
+      img.alt = p.name;
+      img.loading = "lazy";
+      img.decoding = "async";
+
+      const label = document.createElement("span");
+      label.className = "fs-thumb-name";
+      label.textContent = p.name;
+
+      btn.appendChild(img);
+      btn.appendChild(label);
+      btn.addEventListener("click", () => showFavourite(p.name));
+      galleryGrid.appendChild(btn);
+    }
+  }
+
+  // Jump the slideshow to a specific favourite and continue cycling favourites.
+  async function showFavourite(name) {
+    closeGallery();
+    viewMode = "favourites";
+    applyView();
+    updateMenuActive();
+
+    if (!photos.length) return;
+    const i = photos.findIndex(p => p.name === name);
+    idx = i >= 0 ? i : 0;
+    history = [idx];
+    histPos = 0;
+    await showAt(idx, true);
+  }
+
+  // ---- Panels (menu + settings) ----
+  function closeMenu() { menuPanel && menuPanel.classList.add("hidden"); }
+  function closeSettings() { settingsPanel && settingsPanel.classList.add("hidden"); }
+
+  function toggleMenu() {
+    if (!menuPanel) return;
+    closeSettings();
+    updateFavCount();
+    menuPanel.classList.toggle("hidden");
+  }
+
+  function toggleSettings() {
+    if (!settingsPanel) return;
+    closeMenu();
+    settingsPanel.classList.toggle("hidden");
+  }
+
+  // ---- Settings panel wiring ----
+  function initSettingsControls() {
+    if (secondsRange) {
+      secondsRange.min = String(SECONDS_MIN);
+      secondsRange.max = String(SECONDS_MAX);
+      secondsRange.value = String(settings.seconds);
+    }
+    if (secondsValue) secondsValue.textContent = String(settings.seconds);
+    if (diffFolderToggle) diffFolderToggle.checked = settings.favourDifferentFolder;
+
+    if (secondsRange) {
+      secondsRange.addEventListener("input", () => {
+        const v = clampInt(secondsRange.value, settings.seconds, SECONDS_MIN, SECONDS_MAX);
+        settings.seconds = v;
+        if (secondsValue) secondsValue.textContent = String(v);
+        saveSettings();
+        // Apply immediately to the running countdown.
+        resetCountdown();
+        updateStatus();
+      });
+    }
+
+    if (diffFolderToggle) {
+      diffFolderToggle.addEventListener("change", () => {
+        settings.favourDifferentFolder = diffFolderToggle.checked;
+        saveSettings();
+      });
+    }
   }
 
   function bindControls() {
     if (nextBtn) nextBtn.addEventListener("click", goNext);
     if (prevBtn) prevBtn.addEventListener("click", goPrev);
     if (pauseBtn) pauseBtn.addEventListener("click", togglePause);
+
+    if (favBtn) favBtn.addEventListener("click", toggleFavourite);
+    if (menuBtn) menuBtn.addEventListener("click", toggleMenu);
+    if (settingsBtn) settingsBtn.addEventListener("click", toggleSettings);
+    if (settingsCloseBtn) settingsCloseBtn.addEventListener("click", closeSettings);
+    if (viewAllBtn) viewAllBtn.addEventListener("click", () => setViewMode("all"));
+    if (viewFavsBtn) viewFavsBtn.addEventListener("click", openGallery);
+    if (galleryCloseBtn) galleryCloseBtn.addEventListener("click", closeGallery);
+
+    // Tapping the empty stage dismisses any open panel.
+    if (stage) stage.addEventListener("click", (e) => {
+      const inControls = e.target.closest(
+        "#fs-topbar, #fs-overlay, #menuPanel, #settingsPanel"
+      );
+      if (!inControls) { closeMenu(); closeSettings(); }
+    });
+
     updatePauseBtn();
     if (countdownEl) {
       countdownEl.addEventListener("click", togglePause);
-      countdownEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " " || e.code === "Space") {
-          e.preventDefault();
-          togglePause();
-        }
-      });
     }
   }
 
-  function bindKeys() {
-    window.addEventListener("keydown", async (e) => {
-      if (e.key === " " || e.code === "Space") {
-        e.preventDefault();
-        togglePause();
-        return;
-      }
-      if (e.key === "ArrowRight") {
-        e.preventDefault();
-        await goNext();
-        return;
-      }
-      if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        await goPrev();
-        return;
-      }
-      if (e.key.toLowerCase() === "f") {
-        e.preventDefault();
-        if (!document.fullscreenElement) {
-          document.documentElement.requestFullscreen?.();
-        } else {
-          document.exitFullscreen?.();
-        }
-        return;
-      }
-      if (e.key.toLowerCase() === "h") {
-        e.preventDefault();
-        hud.classList.toggle("hidden");
-        return;
-      }
-    });
-  }
-
   async function boot() {
-    bindKeys();
     bindControls();
+    initSettingsControls();
+    updateMenuActive();
 
     // Best-effort attempt to keep screen awake while visible.
     // Note: Some platforms require user interaction or may ignore due to power settings.
@@ -395,6 +698,7 @@
 
     try {
       setStatus("Loading photos…");
+      await fetchFavourites();
       await fetchPhotos();
 
       if (!photos.length) {
